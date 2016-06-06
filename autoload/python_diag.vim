@@ -1,4 +1,36 @@
-let s:version_script = expand('<sfile>:p:h:h').'/python/version_info.py'
+" Fetch the contents of a URL.
+function! s:download(url) abort
+  let script = "
+        \try:\n
+        \    from urllib.request import urlopen\n
+        \except ImportError:\n
+        \    from urllib2 import urlopen\n
+        \\n
+        \try:\n
+        \    response = urlopen('".a:url."')\n
+        \    print(response.read().decode('utf8'))\n
+        \except Exception:\n
+        \    raise\n
+        \"
+  return systemlist('python -c "'.script.'"')
+endfunction
+
+
+" Get the latest Neovim Python client version from PyPI.  The result is
+" cached.
+function! s:latest_pypi_version()
+  if exists('s:pypi_version')
+    return s:pypi_version
+  endif
+
+  let s:pypi_version = 'unknown'
+  let pypi_info = s:download('https://pypi.python.org/pypi/neovim/json')
+  if !empty(pypi_info)
+    let pypi_data = json_decode(pypi_info)
+    let s:pypi_version = get(get(pypi_data, 'info', {}), 'version', 'unknown')
+    return s:pypi_version
+  endif
+endfunction
 
 
 function! s:trim(s) abort
@@ -6,11 +38,61 @@ function! s:trim(s) abort
 endfunction
 
 
+" Simple version comparison.
+function! s:version_cmp(a, b) abort
+  let a = split(a:a, '\.')
+  let b = split(a:b, '\.')
+
+  for i in range(len(a))
+    if a[i] > b[i]
+      return 1
+    elseif a[i] < b[i]
+      return -1
+    endif
+  endfor
+
+  return 0
+endfunction
+
+
 " Get version information using the specified interpreter.  The interpreter is
 " used directly in case breaking changes were introduced since the last time
 " Neovim's Python client was updated.
 function! s:version_info(python) abort
-  return systemlist(printf('"%s" "%s"', a:python, s:version_script))
+  let pypi_version = s:latest_pypi_version()
+  let python_version = s:trim(system(
+        \ printf('"%s" -c "import sys; print(''.''.join(str(x) '
+        \ . 'for x in sys.version_info[:3]))"', a:python)))
+  if empty(python_version)
+    let python_version = 'unknown'
+  endif
+  
+  let nvim_path = s:trim(system(printf('"%s" -c "import sys, neovim;'
+        \ . 'print(neovim.__file__)" 2>/dev/null', a:python)))
+  if empty(nvim_path)
+    return [python_version, 'not found', pypi_version, 'unknown']
+  endif
+
+  let nvim_version = 'unknown'
+  let base = fnamemodify(nvim_path, ':h')
+  for meta in glob(base.'-*/METADATA', 1, 1) + glob(base.'-*/PKG-INFO', 1, 1)
+    for meta_line in readfile(meta)
+      if meta_line =~# '^Version:'
+        let nvim_version = matchstr(meta_line, '^Version: \zs\S\+')
+      endif
+    endfor
+  endfor
+
+  let version_status = 'unknown'
+  if nvim_version != 'unknown' && pypi_version != 'unknown'
+    if s:version_cmp(nvim_version, pypi_version) == -1
+      let version_status = 'outdated'
+    else
+      let version_status = 'up to date'
+    endif
+  endif
+
+  return [python_version, nvim_version, pypi_version, version_status]
 endfunction
 
 
@@ -250,10 +332,18 @@ function! s:diagnose_python(version) abort
 
     echo '  Python Version:' pyversion
     echo '  Neovim Version:' current
+
+    if current == 'not found'
+      call add(notes, 'Error: Neovim Python client is not installed.')
+    endif
+
+    if latest == 'unknown'
+      call add(notes, 'Warning: Unable to fetch latest Neovim Python client version.')
+    endif
+
     if status == 'outdated'
       echon ' (latest: '.latest.')'
     elseif status == 'unknown'
-      call add(notes, 'Error: Neovim Python client is not installed.')
     else
       echon ' ('.status.')'
     endif
@@ -272,6 +362,7 @@ function! python_diag#check(bang) abort
     silent echo ''
     silent call s:diagnose_manifest()
     silent echo ''
+    " silent echo s:download('https://pypi.python.org/pypi/neovim/json')
   finally
     redir END
   endtry
