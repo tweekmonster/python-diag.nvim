@@ -1,3 +1,25 @@
+function! s:trim(s) abort
+  return substitute(a:s, '^\_s*\|\_s*$', '', 'g')
+endfunction
+
+
+" Simple version comparison.
+function! s:version_cmp(a, b) abort
+  let a = split(a:a, '\.')
+  let b = split(a:b, '\.')
+
+  for i in range(len(a))
+    if a[i] > b[i]
+      return 1
+    elseif a[i] < b[i]
+      return -1
+    endif
+  endfor
+
+  return 0
+endfunction
+
+
 " Fetch the contents of a URL.
 function! s:download(url) abort
   let script = "
@@ -30,28 +52,6 @@ function! s:latest_pypi_version()
     let s:pypi_version = get(get(pypi_data, 'info', {}), 'version', 'unknown')
     return s:pypi_version
   endif
-endfunction
-
-
-function! s:trim(s) abort
-  return substitute(a:s, '^\_s*\|\_s*$', '', 'g')
-endfunction
-
-
-" Simple version comparison.
-function! s:version_cmp(a, b) abort
-  let a = split(a:a, '\.')
-  let b = split(a:b, '\.')
-
-  for i in range(len(a))
-    if a[i] > b[i]
-      return 1
-    elseif a[i] < b[i]
-      return -1
-    endif
-  endfor
-
-  return 0
 endfunction
 
 
@@ -219,13 +219,15 @@ function! s:diagnose_python(version) abort
         call add(notes, 'Warning: pyenv was found, but $PYENV_ROOT '
               \ . 'is not set.  Did you follow the final install '
               \ . 'instructions?')
+      else
+        call add(notes, printf('Notice: pyenv found: "%s"', pyenv))
       endif
 
       let python_bin = s:trim(system(
             \ printf('"%s" which %s 2>/dev/null', pyenv, python_bin_name)))
 
       if empty(python_bin)
-        call add(notes, printf('pyenv couldn''t find %s.', python_bin_name))
+        call add(notes, printf('Warning: pyenv couldn''t find %s.', python_bin_name))
       endif
     endif
 
@@ -242,12 +244,14 @@ function! s:diagnose_python(version) abort
         endfor
 
         if len(python_multiple)
-          call add(notes, printf('There are multiple %s executables found.  '
+          " This is worth noting since the user may install something
+          " that changes $PATH, like homebrew.
+          call add(notes, printf('Suggestion: There are multiple %s executables found.  '
                 \ . 'Set "g:%s" to avoid surprises.', python_bin_name, host_prog_var))
         endif
 
         if python_bin =~# '\<shims\>'
-          call add(notes, printf('"%s" appears to be a pyenv shim.  '
+          call add(notes, printf('Warning: "%s" appears to be a pyenv shim.  '
                 \ . 'This could mean that a) the "pyenv" executable is not in '
                 \ . '$PATH, b) your pyenv installation is broken.  '
                 \ . 'You should set "g:%s" to avoid surprises.',
@@ -258,14 +262,12 @@ function! s:diagnose_python(version) abort
   endif
 
   if !empty(python_bin)
-    if !empty(pyenv) && !exists('g:'.host_prog_var)
-      call add(notes, printf('pyenv found: "%s"', pyenv))
-      if !empty(pyenv_root) && resolve(python_bin) !~# '^'.pyenv_root.'/'
-        call add(notes, printf('Suggestion: Create a virtualenv specifically '
-              \ . 'for Neovim using pyenv and use "g:%s".  This will avoid '
-              \ . 'the need to install Neovim''s Python client in each '
-              \ . 'version/virtualenv.', host_prog_var))
-      endif
+    if !empty(pyenv) && !exists('g:'.host_prog_var) && !empty(pyenv_root)
+          \ && resolve(python_bin) !~# '^'.pyenv_root.'/'
+      call add(notes, printf('Suggestion: Create a virtualenv specifically '
+            \ . 'for Neovim using pyenv and use "g:%s".  This will avoid '
+            \ . 'the need to install Neovim''s Python client in each '
+            \ . 'version/virtualenv.', host_prog_var))
     endif
 
     if !empty(venv) && exists('g:'.host_prog_var)
@@ -285,7 +287,7 @@ function! s:diagnose_python(version) abort
   endif
 
   if empty(python_bin)
-    call add(notes, printf('%s was not found.', python_bin_name))
+    call add(notes, printf('Error: "%s" was not found.', python_bin_name))
   elseif !s:check_bin(python_bin, notes)
     let python_bin = ''
   endif
@@ -353,7 +355,7 @@ function! s:diagnose_python(version) abort
 endfunction
 
 
-function! python_diag#check(bang) abort
+function! nvimdiagnostic#python#check(bang) abort
   redir => report
   try
     silent call s:diagnose_python(2)
@@ -362,7 +364,6 @@ function! python_diag#check(bang) abort
     silent echo ''
     silent call s:diagnose_manifest()
     silent echo ''
-    " silent echo s:download('https://pypi.python.org/pypi/neovim/json')
   finally
     redir END
   endtry
